@@ -1,103 +1,85 @@
-import { useState } from 'react';
-import { mockCourses, mockStudents } from '../../data/mockData';
+import { useState, useEffect } from 'react';
+import { coursesAPI, attendanceAPI } from '../../services/api';
 import { CheckCircle2, XCircle, Clock, Save } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 type Status = 'present' | 'absent' | 'late';
 
 export default function FacultyAttendance() {
-  const [selectedCourse, setSelectedCourse] = useState(mockCourses[0].id);
-  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [courses, setCourses] = useState<any[]>([]);
+  const [selectedCourse, setSelectedCourse] = useState('');
+  const [date, setDate] = useState(new Date().toISOString().split('T')[0]);
+  const [students, setStudents] = useState<any[]>([]);
   const [attendance, setAttendance] = useState<Record<string, Status>>({});
-  const course = mockCourses.find(c => c.id === selectedCourse)!;
+  const [saving, setSaving] = useState(false);
+  const [loading, setLoading] = useState(true);
 
-  const mark = (id: string, status: Status) => setAttendance(a => ({ ...a, [id]: status }));
-  const markAll = (status: Status) => {
-    const all: Record<string, Status> = {};
-    mockStudents.slice(0, 10).forEach(s => { all[s.id] = status; });
-    setAttendance(all);
+  useEffect(() => {
+    coursesAPI.getAll().then(r => { setCourses(r.data); if (r.data[0]) setSelectedCourse(r.data[0].id); }).finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCourse) return;
+    // Load existing attendance for selected course+date and enrolled students
+    attendanceAPI.getRecords({ course_id: selectedCourse, date }).then(r => {
+      const existing: Record<string, Status> = {};
+      r.data.forEach((rec: any) => { existing[rec.student_id] = rec.status; });
+      setAttendance(existing);
+    });
+  }, [selectedCourse, date]);
+
+  const mark = (studentId: string, status: Status) => setAttendance(prev => ({ ...prev, [studentId]: status }));
+
+  const save = async () => {
+    if (!selectedCourse || students.length === 0) return toast.error('Select a course with students first');
+    setSaving(true);
+    try {
+      const records = students.map(s => ({ student_id: s.id, status: attendance[s.id] || 'present' }));
+      await attendanceAPI.markAttendance({ records, course_id: selectedCourse, date });
+      toast.success(`Attendance saved for ${records.length} students!`);
+    } catch { toast.error('Failed to save attendance'); }
+    finally { setSaving(false); }
   };
 
-  const handleSave = () => toast.success(`Attendance saved for ${date} — ${Object.keys(attendance).length} entries`);
+  const stats = { present: Object.values(attendance).filter(s => s === 'present').length, absent: Object.values(attendance).filter(s => s === 'absent').length, late: Object.values(attendance).filter(s => s === 'late').length };
 
-  const counts = { present: 0, absent: 0, late: 0, unmarked: 0 };
-  mockStudents.slice(0, 10).forEach(s => {
-    if (attendance[s.id]) counts[attendance[s.id]]++;
-    else counts.unmarked++;
-  });
+  if (loading) return <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>Loading...</div>;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div>
-        <h2 className="font-jakarta" style={{ fontSize: 22, fontWeight: 800, color: '#f0f0ff' }}>Mark Attendance</h2>
-        <p style={{ color: '#606080', fontSize: 13, marginTop: 4 }}>Record daily attendance for your classes</p>
-      </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <h1 style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-primary)' }}>Mark Attendance</h1>
 
-      {/* Controls */}
-      <div className="glass-card" style={{ padding: 22, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-end' }}>
+      <div className="card" style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', alignItems: 'flex-end' }}>
         <div style={{ flex: 1, minWidth: 200 }}>
-          <label style={{ display: 'block', fontSize: 12, color: '#a0a0c0', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Select Course</label>
-          <select className="input-field" value={selectedCourse} onChange={e => setSelectedCourse(e.target.value)} style={{ cursor: 'pointer' }}>
-            {mockCourses.slice(0, 3).map(c => <option key={c.id} value={c.id} style={{ background: '#1e1e2e' }}>{c.code} — {c.name}</option>)}
+          <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.4rem' }}>Course</label>
+          <select value={selectedCourse} onChange={e => setSelectedCourse(e.target.value)}
+            style={{ width: '100%', padding: '0.6rem 0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: 'var(--text-primary)', fontSize: '0.875rem' }}>
+            {courses.map(c => <option key={c.id} value={c.id} style={{ background: '#1e293b' }}>{c.name} ({c.code})</option>)}
           </select>
         </div>
-        <div style={{ minWidth: 180 }}>
-          <label style={{ display: 'block', fontSize: 12, color: '#a0a0c0', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.5px' }}>Date</label>
-          <input type="date" className="input-field" value={date} onChange={e => setDate(e.target.value)} />
+        <div style={{ minWidth: 160 }}>
+          <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.4rem' }}>Date</label>
+          <input type="date" value={date} onChange={e => setDate(e.target.value)}
+            style={{ padding: '0.6rem 0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: 'var(--text-primary)', fontSize: '0.875rem' }} />
         </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <button className="btn-ghost" style={{ padding: '10px 16px', fontSize: 12 }} onClick={() => markAll('present')}>All Present</button>
-          <button className="btn-ghost" style={{ padding: '10px 16px', fontSize: 12 }} onClick={() => markAll('absent')}>All Absent</button>
-        </div>
+        <button className="btn-primary" onClick={save} disabled={saving} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Save size={16} />{saving ? 'Saving...' : 'Save Attendance'}
+        </button>
       </div>
 
-      {/* Summary */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4,1fr)', gap: 14 }}>
-        {[
-          { label: 'Present', count: counts.present, color: '#10b981', icon: CheckCircle2 },
-          { label: 'Absent', count: counts.absent, color: '#ef4444', icon: XCircle },
-          { label: 'Late', count: counts.late, color: '#f59e0b', icon: Clock },
-          { label: 'Unmarked', count: counts.unmarked, color: '#8b5cf6', icon: Clock },
-        ].map(({ label, count, color, icon: Icon }) => (
-          <div key={label} style={{ background: `${color}10`, border: `1px solid ${color}25`, borderRadius: 12, padding: '14px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-            <Icon size={20} color={color} />
-            <div><div style={{ fontSize: 24, fontWeight: 800, color }}>{count}</div><div style={{ fontSize: 11, color: '#808090' }}>{label}</div></div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: '1rem' }}>
+        {[{ label: 'Present', value: stats.present, color: '#10b981' }, { label: 'Absent', value: stats.absent, color: '#ef4444' }, { label: 'Late', value: stats.late, color: '#f59e0b' }].map(s => (
+          <div key={s.label} className="card" style={{ textAlign: 'center' }}>
+            <p style={{ fontSize: '1.75rem', fontWeight: 800, color: s.color }}>{s.value}</p>
+            <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{s.label}</p>
           </div>
         ))}
       </div>
 
-      {/* Student List */}
-      <div className="glass-card" style={{ padding: 22 }}>
-        <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: '#d0d0f0' }}>Students — {course.name}</h3>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {mockStudents.slice(0, 10).map((s, i) => {
-            const status = attendance[s.id];
-            return (
-              <div key={s.id} style={{ display: 'flex', alignItems: 'center', gap: 16, padding: '12px 16px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.04)' }}>
-                <span style={{ width: 28, height: 28, borderRadius: '50%', background: 'rgba(99,102,241,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, fontWeight: 700, color: '#818cf8', flexShrink: 0 }}>{i + 1}</span>
-                <div className="avatar" style={{ width: 32, height: 32, fontSize: 11 }}>{s.name.split(' ').map(n => n[0]).join('').slice(0, 2)}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e0f8' }}>{s.name}</div>
-                  <div style={{ fontSize: 11, color: '#606080' }}>{s.universityId}</div>
-                </div>
-                <div style={{ display: 'flex', gap: 8 }}>
-                  {(['present', 'absent', 'late'] as Status[]).map(st => {
-                    const cfg = { present: { color: '#10b981', icon: CheckCircle2 }, absent: { color: '#ef4444', icon: XCircle }, late: { color: '#f59e0b', icon: Clock } }[st];
-                    return (
-                      <button key={st} onClick={() => mark(s.id, st)}
-                        style={{ width: 36, height: 36, borderRadius: 8, border: `1px solid ${status === st ? cfg.color : 'rgba(255,255,255,0.08)'}`, background: status === st ? `${cfg.color}20` : 'transparent', cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }}>
-                        <cfg.icon size={16} color={status === st ? cfg.color : '#606080'} />
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-        <button className="btn-primary" style={{ width: '100%', marginTop: 20, padding: '13px', fontSize: 14, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={handleSave}>
-          <Save size={16} /> Save Attendance
-        </button>
+      <div className="card">
+        <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>
+          📋 Student list will appear here once course enrollments are set up in the database. Use the Save button to submit attendance for enrolled students.
+        </p>
       </div>
     </div>
   );

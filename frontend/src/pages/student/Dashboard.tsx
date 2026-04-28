@@ -1,145 +1,146 @@
+import { useState, useEffect } from 'react';
 import { useAuthStore } from '../../store/authStore';
-import { mockCourses, mockAttendance, mockAssignments, mockNotifications, mockGrades, attendanceTrendData } from '../../data/mockData';
-import { BookOpen, ClipboardCheck, FileText, TrendingUp, AlertTriangle, CheckCircle2, Clock, Award } from 'lucide-react';
-import { RadialBarChart, RadialBar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Legend } from 'recharts';
-
-const avgAttendance = Math.round(mockAttendance.reduce((a, b) => a + b.percentage, 0) / mockAttendance.length);
-const cgpa = 8.86;
-const pendingAssignments = mockAssignments.filter(a => a.status === 'pending').length;
-const unreadNotifs = mockNotifications.filter(n => !n.isRead).length;
-
-const radialData = [{ name: 'Attendance', value: avgAttendance, fill: '#6366f1' }];
-
-const StatCard = ({ icon: Icon, label, value, sub, color, glow }: any) => (
-  <div className="stat-card" style={{ borderColor: `${color}20` }}>
-    <div style={{ position: 'absolute', top: 0, right: 0, width: 100, height: 100, borderRadius: '50%', background: color, filter: 'blur(40px)', opacity: 0.12 }} />
-    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', position: 'relative' }}>
-      <div>
-        <p style={{ fontSize: 12, color: '#a0a0c0', fontWeight: 500, marginBottom: 8, letterSpacing: '0.5px', textTransform: 'uppercase' }}>{label}</p>
-        <p style={{ fontSize: 32, fontWeight: 800, color: '#f0f0ff', lineHeight: 1 }}>{value}</p>
-        {sub && <p style={{ fontSize: 12, color: '#606080', marginTop: 6 }}>{sub}</p>}
-      </div>
-      <div style={{ width: 44, height: 44, borderRadius: 12, background: `${color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${color}30` }}>
-        <Icon size={20} color={color} />
-      </div>
-    </div>
-  </div>
-);
+import { coursesAPI, attendanceAPI, assignmentsAPI, notificationsAPI } from '../../services/api';
+import { BookOpen, ClipboardCheck, FileText, TrendingUp, AlertTriangle, Bell } from 'lucide-react';
+import { AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function StudentDashboard() {
   const { user } = useAuthStore();
-  const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  const [courses, setCourses] = useState<any[]>([]);
+  const [attendance, setAttendance] = useState<any[]>([]);
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [notifications, setNotifications] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const [c, a, asgn, notifs] = await Promise.all([
+          coursesAPI.getAll(),
+          attendanceAPI.getSummary(),
+          assignmentsAPI.getAll(),
+          notificationsAPI.getAll(),
+        ]);
+        setCourses(c.data);
+        setAttendance(a.data);
+        setAssignments(asgn.data);
+        setNotifications(notifs.data);
+      } catch (err) {
+        console.error(err);
+      } finally {
+        setLoading(false);
+      }
+    };
+    load();
+  }, []);
+
+  const avgAttendance = attendance.length
+    ? Math.round(attendance.reduce((s: number, a: any) => s + parseFloat(a.attendance_percentage || 0), 0) / attendance.length)
+    : 0;
+  const pendingAssignments = assignments.filter((a: any) => !a.submission_status || a.submission_status === 'pending').length;
+  const atRisk = attendance.filter((a: any) => parseFloat(a.attendance_percentage) < 75).length;
+  const unread = notifications.filter((n: any) => !n.is_read).length;
+
+  const attendanceChartData = attendance.map((a: any) => ({
+    name: a.course_code,
+    percentage: parseFloat(a.attendance_percentage),
+    present: parseInt(a.present_count),
+    total: parseInt(a.total_classes),
+  }));
+
+  if (loading) return (
+    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '60vh' }}>
+      <div className="spinner" style={{ width: 48, height: 48, border: '4px solid rgba(99,102,241,0.2)', borderTop: '4px solid #6366f1', borderRadius: '50%', animation: 'spin 1s linear infinite' }} />
+    </div>
+  );
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24, animation: 'fadeInUp 0.5s ease' }}>
-      {/* Header */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 className="font-jakarta" style={{ fontSize: 24, fontWeight: 800, background: 'linear-gradient(135deg,#f0f0ff,#8080c0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-            Good morning, {user?.name?.split(' ')[0]}! 👋
-          </h2>
-          <p style={{ color: '#606080', fontSize: 13, marginTop: 4 }}>{today} · {user?.department} · Sem {user?.semester}</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <span className="badge badge-primary">Batch {user?.batch}</span>
-          <span className="badge badge-cyan">{user?.universityId}</span>
-        </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <div>
+        <h1 style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+          Welcome back, {user?.name?.split(' ')[0]} 👋
+        </h1>
+        <p style={{ color: 'var(--text-muted)', marginTop: '0.25rem' }}>
+          {user?.university_id} · {new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' })}
+        </p>
       </div>
 
-      {/* Alert Banner */}
-      {unreadNotifs > 0 && (
-        <div style={{ background: 'linear-gradient(135deg,rgba(245,158,11,0.1),rgba(239,68,68,0.05))', border: '1px solid rgba(245,158,11,0.25)', borderRadius: 12, padding: '12px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
-          <AlertTriangle size={18} color="#fbbf24" />
-          <span style={{ fontSize: 13, color: '#d0d0b0' }}>You have <strong style={{ color: '#fbbf24' }}>{unreadNotifs} unread notifications</strong> and <strong style={{ color: '#f87171' }}>{pendingAssignments} pending assignments</strong>. Check them now.</span>
+      {/* Stat Cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1rem' }}>
+        {[
+          { label: 'Enrolled Courses', value: courses.length, icon: BookOpen, color: '#6366f1', bg: 'rgba(99,102,241,0.1)' },
+          { label: 'Avg Attendance', value: `${avgAttendance}%`, icon: ClipboardCheck, color: avgAttendance >= 75 ? '#10b981' : '#f59e0b', bg: avgAttendance >= 75 ? 'rgba(16,185,129,0.1)' : 'rgba(245,158,11,0.1)' },
+          { label: 'Pending Tasks', value: pendingAssignments, icon: FileText, color: '#f59e0b', bg: 'rgba(245,158,11,0.1)' },
+          { label: 'At-Risk Courses', value: atRisk, icon: AlertTriangle, color: atRisk > 0 ? '#ef4444' : '#10b981', bg: atRisk > 0 ? 'rgba(239,68,68,0.1)' : 'rgba(16,185,129,0.1)' },
+          { label: 'Notifications', value: unread, icon: Bell, color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)' },
+        ].map((s) => (
+          <div key={s.label} className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, background: s.bg, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+              <s.icon size={22} color={s.color} />
+            </div>
+            <div>
+              <p style={{ fontSize: '1.5rem', fontWeight: 800, color: s.color }}>{s.value}</p>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{s.label}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {atRisk > 0 && (
+        <div style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: 12, padding: '1rem', display: 'flex', gap: '0.75rem', alignItems: 'center' }}>
+          <AlertTriangle size={20} color="#ef4444" />
+          <p style={{ color: '#ef4444', fontWeight: 600 }}>
+            ⚠️ You have {atRisk} course(s) below 75% attendance. Risk of detention!
+          </p>
         </div>
       )}
 
-      {/* Stat Cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 16 }}>
-        <StatCard icon={TrendingUp}     label="CGPA"              value={cgpa}          sub="Current semester"    color="#6366f1" />
-        <StatCard icon={ClipboardCheck} label="Avg Attendance"    value={`${avgAttendance}%`} sub="Across 5 courses"  color="#10b981" />
-        <StatCard icon={BookOpen}       label="Enrolled Courses"  value={mockCourses.filter(c=>c.semester===5).length} sub="Semester 5"       color="#8b5cf6" />
-        <StatCard icon={FileText}       label="Pending Assignments" value={pendingAssignments} sub="Due this week"  color="#f59e0b" />
-      </div>
-
-      {/* Charts row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Attendance Trend */}
-        <div className="chart-container">
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 20, color: '#d0d0f0' }}>📈 Attendance Trend</h3>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={attendanceTrendData}>
+      {/* Attendance Chart */}
+      {attendanceChartData.length > 0 && (
+        <div className="card">
+          <h2 style={{ fontWeight: 700, marginBottom: '1.5rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <TrendingUp size={20} color="#6366f1" /> Attendance Overview
+          </h2>
+          <ResponsiveContainer width="100%" height={250}>
+            <AreaChart data={attendanceChartData}>
+              <defs>
+                <linearGradient id="attGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor="#6366f1" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#6366f1" stopOpacity={0} />
+                </linearGradient>
+              </defs>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-              <XAxis dataKey="month" tick={{ fill: '#606080', fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: '#606080', fontSize: 11 }} axisLine={false} tickLine={false} domain={[60, 100]} />
-              <Tooltip contentStyle={{ background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, color: '#f0f0ff', fontSize: 12 }} />
-              <Legend wrapperStyle={{ fontSize: 11, color: '#a0a0c0' }} />
-              <Line type="monotone" dataKey="ML" stroke="#6366f1" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="CC" stroke="#8b5cf6" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="SE" stroke="#10b981" strokeWidth={2} dot={false} />
-              <Line type="monotone" dataKey="CN" stroke="#f59e0b" strokeWidth={2} dot={false} />
-            </LineChart>
+              <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 12 }} />
+              <YAxis stroke="#94a3b8" domain={[0, 100]} tick={{ fontSize: 12 }} />
+              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff' }} formatter={(v: any) => [`${v}%`, 'Attendance']} />
+              <Area type="monotone" dataKey="percentage" stroke="#6366f1" fill="url(#attGrad)" strokeWidth={2} />
+            </AreaChart>
           </ResponsiveContainer>
         </div>
+      )}
 
-        {/* Course-wise Attendance */}
-        <div className="chart-container">
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: '#d0d0f0' }}>📊 Course Attendance</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {mockAttendance.map(a => (
-              <div key={a.courseId}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
-                  <span style={{ fontSize: 12, color: '#c0c0e0', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{a.courseName}</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: a.percentage < 75 ? '#f87171' : a.percentage < 85 ? '#fbbf24' : '#34d399' }}>{a.percentage}%</span>
-                </div>
-                <div className="progress-bar">
-                  <div className="progress-fill" style={{ width: `${a.percentage}%`, background: a.percentage < 75 ? 'linear-gradient(90deg,#ef4444,#f87171)' : a.percentage < 85 ? 'linear-gradient(90deg,#f59e0b,#fbbf24)' : 'linear-gradient(90deg,#10b981,#34d399)' }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-
-      {/* Bottom row */}
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Recent Assignments */}
-        <div className="glass-card" style={{ padding: 20 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: '#d0d0f0' }}>📝 Recent Assignments</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {mockAssignments.slice(0, 4).map(a => (
-              <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.04)' }}>
-                <div style={{ flex: 1, minWidth: 0, marginRight: 12 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#d0d0f0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{a.title}</div>
-                  <div style={{ fontSize: 11, color: '#606080', marginTop: 2 }}>{a.courseName} · Due {a.dueDate}</div>
-                </div>
-                <span className={`badge badge-${a.status === 'graded' ? 'success' : a.status === 'submitted' ? 'primary' : a.status === 'late' ? 'danger' : 'warning'}`}>
-                  {a.status}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Grade Summary */}
-        <div className="glass-card" style={{ padding: 20 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: '#d0d0f0' }}>🏆 Grade Summary — Sem 5</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {mockGrades.map(g => (
-              <div key={g.courseId} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.04)' }}>
+      {/* Upcoming Assignments */}
+      {assignments.length > 0 && (
+        <div className="card">
+          <h2 style={{ fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)' }}>📋 Pending Assignments</h2>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+            {assignments.filter((a: any) => !a.submission_status || a.submission_status === 'pending').slice(0, 5).map((a: any) => (
+              <div key={a.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem', background: 'rgba(255,255,255,0.03)', borderRadius: 8, border: '1px solid rgba(255,255,255,0.06)' }}>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: '#d0d0f0' }}>{g.courseName}</div>
-                  <div style={{ fontSize: 11, color: '#606080', marginTop: 2 }}>Internal: {g.internal} | External: {g.external}</div>
+                  <p style={{ fontWeight: 600, color: 'var(--text-primary)', fontSize: '0.875rem' }}>{a.title}</p>
+                  <p style={{ color: 'var(--text-muted)', fontSize: '0.75rem' }}>{a.course_name} · {a.course_code}</p>
                 </div>
                 <div style={{ textAlign: 'right' }}>
-                  <div style={{ fontSize: 18, fontWeight: 800, color: g.grade.includes('+') ? '#34d399' : '#818cf8' }}>{g.grade}</div>
-                  <div style={{ fontSize: 11, color: '#606080' }}>GPA {g.gpa}</div>
+                  <p style={{ fontSize: '0.75rem', color: new Date(a.due_date) < new Date() ? '#ef4444' : '#f59e0b', fontWeight: 600 }}>
+                    Due {new Date(a.due_date).toLocaleDateString('en-IN')}
+                  </p>
+                  <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>{a.max_marks} marks</p>
                 </div>
               </div>
             ))}
           </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }

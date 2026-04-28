@@ -4,175 +4,451 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
+const { Pool } = require('pg');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-const JWT_SECRET = process.env.JWT_SECRET || 'caap_mitadt_secret_2026';
 
-// Middleware
+// ─── DB CONNECTION ────────────────────────────────────────────────────────────
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
+});
+
+pool.connect((err) => {
+  if (err) console.error('❌ DB connection error:', err.message);
+  else console.log('✅ Connected to PostgreSQL database');
+});
+
+// ─── MIDDLEWARE ───────────────────────────────────────────────────────────────
 app.use(helmet());
-app.use(cors({ origin: 'http://localhost:3000', credentials: true }));
-app.use(morgan('dev'));
+app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(morgan('dev'));
 
-// ─── Demo Users ───────────────────────────────────────────────────────────────
-const DEMO_USERS = [
-  { id: 'STU001', name: 'Arjun Mehta', email: 'student@mitadt.edu.in', password: bcrypt.hashSync('student123', 10), role: 'student', universityId: 'MIT2024CS001', department: 'Computer Science', semester: 5, batch: '2022-2026' },
-  { id: 'FAC001', name: 'Dr. Priya Sharma', email: 'faculty@mitadt.edu.in', password: bcrypt.hashSync('faculty123', 10), role: 'faculty', universityId: 'MITFAC0042', department: 'Computer Science' },
-  { id: 'ADM001', name: 'Rajesh Kumar', email: 'admin@mitadt.edu.in', password: bcrypt.hashSync('admin123', 10), role: 'admin', universityId: 'MITADM0001', department: 'Administration' },
-];
-
-// ─── Auth Middleware ──────────────────────────────────────────────────────────
-const authenticate = (req, res, next) => {
-  const auth = req.headers.authorization;
-  if (!auth?.startsWith('Bearer ')) return res.status(401).json({ error: 'Unauthorized' });
+// ─── AUTH MIDDLEWARE ──────────────────────────────────────────────────────────
+const auth = (req, res, next) => {
+  const token = req.headers.authorization?.split(' ')[1];
+  if (!token) return res.status(401).json({ error: 'No token provided' });
   try {
-    const payload = jwt.verify(auth.slice(7), JWT_SECRET);
-    req.user = payload;
+    req.user = jwt.verify(token, process.env.JWT_SECRET);
     next();
   } catch {
-    res.status(401).json({ error: 'Invalid or expired token' });
+    res.status(401).json({ error: 'Invalid token' });
   }
 };
 
-const authorize = (...roles) => (req, res, next) => {
-  if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'Access forbidden' });
+const requireRole = (...roles) => (req, res, next) => {
+  if (!roles.includes(req.user.role))
+    return res.status(403).json({ error: 'Forbidden' });
   next();
 };
 
-// ─── Auth Routes ──────────────────────────────────────────────────────────────
+// ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
+app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// AUTH ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
-    const user = DEMO_USERS.find(u => u.email.toLowerCase() === email.toLowerCase());
-    if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-    const valid = await bcrypt.compare(password, user.password);
+    if (!email || !password)
+      return res.status(400).json({ error: 'Email and password required' });
+
+    const { rows } = await pool.query(
+      `SELECT u.*, d.name as department_name, d.code as department_code
+       FROM users u LEFT JOIN departments d ON d.id = u.department_id
+       WHERE u.email = $1 AND u.is_active = true`,
+      [email.toLowerCase()]
+    );
+
+    if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
+    const user = rows[0];
+
+    const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-    const { password: _, ...userInfo } = user;
-    const token = jwt.sign({ ...userInfo }, JWT_SECRET, { expiresIn: '7d' });
-    res.json({ success: true, token, user: userInfo });
+
+    const token = jwt.sign(
+      { id: user.id, email: user.email, role: user.role, name: user.name },
+      process.env.JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    const { password_hash, ...safeUser } = user;
+    res.json({ token, user: safeUser });
   } catch (err) {
-    res.status(500).json({ error: 'Internal server error' });
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
   }
 });
 
-app.get('/api/auth/me', authenticate, (req, res) => {
-  const user = DEMO_USERS.find(u => u.id === req.user.id);
-  if (!user) return res.status(404).json({ error: 'User not found' });
-  const { password: _, ...userInfo } = user;
-  res.json({ user: userInfo });
+app.get('/api/auth/me', auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT u.id, u.name, u.email, u.role, u.university_id, u.phone, u.avatar, u.join_date,
+              d.name as department_name, d.code as department_code
+       FROM users u LEFT JOIN departments d ON d.id = u.department_id
+       WHERE u.id = $1`,
+      [req.user.id]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'User not found' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.post('/api/auth/logout', authenticate, (req, res) => {
-  res.json({ success: true, message: 'Logged out successfully' });
+// ═══════════════════════════════════════════════════════════════════════════════
+// COURSES ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/courses', auth, async (req, res) => {
+  try {
+    let query, params;
+    if (req.user.role === 'student') {
+      query = `SELECT c.*, u.name as faculty_name, d.name as department_name
+               FROM courses c
+               JOIN enrollments e ON e.course_id = c.id AND e.student_id = $1
+               LEFT JOIN users u ON u.id = c.faculty_id
+               LEFT JOIN departments d ON d.id = c.department_id
+               ORDER BY c.code`;
+      params = [req.user.id];
+    } else if (req.user.role === 'faculty') {
+      query = `SELECT c.*, COUNT(e.id) as enrolled_count, d.name as department_name
+               FROM courses c
+               LEFT JOIN enrollments e ON e.course_id = c.id
+               LEFT JOIN departments d ON d.id = c.department_id
+               WHERE c.faculty_id = $1
+               GROUP BY c.id, d.name ORDER BY c.code`;
+      params = [req.user.id];
+    } else {
+      query = `SELECT c.*, u.name as faculty_name, COUNT(e.id) as enrolled_count, d.name as department_name
+               FROM courses c
+               LEFT JOIN users u ON u.id = c.faculty_id
+               LEFT JOIN enrollments e ON e.course_id = c.id
+               LEFT JOIN departments d ON d.id = c.department_id
+               GROUP BY c.id, u.name, d.name ORDER BY c.code`;
+      params = [];
+    }
+    const { rows } = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ─── Student Routes ───────────────────────────────────────────────────────────
-app.get('/api/student/profile', authenticate, authorize('student'), (req, res) => {
-  res.json({ profile: { ...req.user, cgpa: 8.86, totalCredits: 78, semester: 5 } });
+// ═══════════════════════════════════════════════════════════════════════════════
+// ATTENDANCE ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/attendance/summary', auth, async (req, res) => {
+  try {
+    const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
+    const { rows } = await pool.query(
+      `SELECT * FROM attendance_summary WHERE student_id = $1`,
+      [studentId]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.get('/api/student/courses', authenticate, authorize('student'), (req, res) => {
-  res.json({ courses: [
-    { id: 'C001', code: 'CS501', name: 'Machine Learning', credits: 4, faculty: 'Dr. Priya Sharma', schedule: 'Mon/Wed 9:00-10:30', room: 'A-301' },
-    { id: 'C002', code: 'CS502', name: 'Cloud Computing', credits: 3, faculty: 'Prof. Rahul Gupta', schedule: 'Tue/Thu 11:00-12:30', room: 'A-302' },
-    { id: 'C003', code: 'CS503', name: 'Software Engineering', credits: 4, faculty: 'Dr. Anjali Singh', schedule: 'Mon/Fri 2:00-3:30', room: 'B-201' },
-  ]});
+app.get('/api/attendance', auth, async (req, res) => {
+  try {
+    const { course_id, date } = req.query;
+    let query = `SELECT a.*, u.name as student_name, u.university_id
+                 FROM attendance a JOIN users u ON u.id = a.student_id
+                 WHERE 1=1`;
+    const params = [];
+    if (course_id) { params.push(course_id); query += ` AND a.course_id = $${params.length}`; }
+    if (date) { params.push(date); query += ` AND a.date = $${params.length}`; }
+    if (req.user.role === 'student') { params.push(req.user.id); query += ` AND a.student_id = $${params.length}`; }
+    query += ' ORDER BY a.date DESC';
+    const { rows } = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.get('/api/student/attendance', authenticate, authorize('student'), (req, res) => {
-  res.json({ attendance: [
-    { courseId: 'C001', courseName: 'Machine Learning', total: 40, present: 36, absent: 3, late: 1, percentage: 90 },
-    { courseId: 'C002', courseName: 'Cloud Computing',  total: 35, present: 28, absent: 6, late: 1, percentage: 80 },
-    { courseId: 'C003', courseName: 'Software Engineering', total: 42, present: 38, absent: 4, late: 0, percentage: 90.5 },
-  ]});
+app.post('/api/attendance', auth, requireRole('faculty', 'admin'), async (req, res) => {
+  try {
+    const { records, course_id, date } = req.body;
+    // records = [{ student_id, status }]
+    const results = [];
+    for (const rec of records) {
+      const { rows } = await pool.query(
+        `INSERT INTO attendance (student_id, course_id, date, status, marked_by)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (student_id, course_id, date) DO UPDATE SET status = $4, marked_by = $5
+         RETURNING *`,
+        [rec.student_id, course_id, date, rec.status, req.user.id]
+      );
+      results.push(rows[0]);
+    }
+    res.json({ saved: results.length, records: results });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.get('/api/student/grades', authenticate, authorize('student'), (req, res) => {
-  res.json({ grades: [
-    { courseId: 'C001', courseName: 'Machine Learning', internal: 42, external: 78, total: 120, grade: 'A', gpa: 9.0, semester: 5 },
-    { courseId: 'C002', courseName: 'Cloud Computing', internal: 35, external: 65, total: 100, grade: 'B+', gpa: 8.0, semester: 5 },
-    { courseId: 'C003', courseName: 'Software Engineering', internal: 45, external: 82, total: 127, grade: 'A+', gpa: 10.0, semester: 5 },
-  ], cgpa: 8.86 });
+// ═══════════════════════════════════════════════════════════════════════════════
+// ASSIGNMENTS ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/assignments', auth, async (req, res) => {
+  try {
+    let query, params = [];
+    if (req.user.role === 'student') {
+      query = `SELECT a.*, c.name as course_name, c.code as course_code,
+                      s.status as submission_status, s.marks_obtained, s.submitted_at
+               FROM assignments a
+               JOIN courses c ON c.id = a.course_id
+               JOIN enrollments e ON e.course_id = c.id AND e.student_id = $1
+               LEFT JOIN submissions s ON s.assignment_id = a.id AND s.student_id = $1
+               ORDER BY a.due_date`;
+      params = [req.user.id];
+    } else if (req.user.role === 'faculty') {
+      query = `SELECT a.*, c.name as course_name, c.code as course_code,
+                      COUNT(s.id) as submission_count
+               FROM assignments a
+               JOIN courses c ON c.id = a.course_id AND c.faculty_id = $1
+               LEFT JOIN submissions s ON s.assignment_id = a.id
+               GROUP BY a.id, c.name, c.code ORDER BY a.due_date DESC`;
+      params = [req.user.id];
+    } else {
+      query = `SELECT a.*, c.name as course_name, u.name as faculty_name
+               FROM assignments a JOIN courses c ON c.id = a.course_id
+               LEFT JOIN users u ON u.id = a.faculty_id ORDER BY a.created_at DESC`;
+    }
+    const { rows } = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.get('/api/student/fees', authenticate, authorize('student'), (req, res) => {
-  res.json({ fees: [
-    { semester: 'Semester 5', amount: 85000, paid: 85000, due: 0, status: 'paid', dueDate: '2025-12-31' },
-    { semester: 'Semester 6', amount: 88000, paid: 50000, due: 38000, status: 'partial', dueDate: '2026-06-30' },
-  ]});
+app.post('/api/assignments', auth, requireRole('faculty', 'admin'), async (req, res) => {
+  try {
+    const { title, description, course_id, due_date, max_marks } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO assignments (title, description, course_id, faculty_id, due_date, max_marks)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [title, description, course_id, req.user.id, due_date, max_marks || 100]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ─── Faculty Routes ───────────────────────────────────────────────────────────
-app.get('/api/faculty/courses', authenticate, authorize('faculty'), (req, res) => {
-  res.json({ courses: [
-    { id: 'C001', code: 'CS501', name: 'Machine Learning', enrolledCount: 62, semester: 5 },
-    { id: 'C002', code: 'CS502', name: 'Cloud Computing',  enrolledCount: 58, semester: 5 },
-    { id: 'C005', code: 'CS505', name: 'Database Systems', enrolledCount: 55, semester: 5 },
-  ]});
+// ═══════════════════════════════════════════════════════════════════════════════
+// GRADES ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/grades', auth, async (req, res) => {
+  try {
+    const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
+    const { rows } = await pool.query(
+      `SELECT g.*, c.name as course_name, c.code as course_code, c.credits
+       FROM grades g JOIN courses c ON c.id = g.course_id
+       WHERE g.student_id = $1 ORDER BY g.semester, c.name`,
+      [studentId]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.post('/api/faculty/attendance', authenticate, authorize('faculty'), (req, res) => {
-  const { courseId, date, records } = req.body;
-  if (!courseId || !date || !records) return res.status(400).json({ error: 'Missing required fields' });
-  res.json({ success: true, message: `Attendance saved for ${records.length} students on ${date}` });
+// ═══════════════════════════════════════════════════════════════════════════════
+// FEES ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/fees', auth, async (req, res) => {
+  try {
+    const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
+    const { rows } = await pool.query(
+      `SELECT * FROM fees WHERE student_id = $1 ORDER BY due_date DESC`,
+      [studentId]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.post('/api/faculty/assignments', authenticate, authorize('faculty'), (req, res) => {
-  const { title, courseId, dueDate, maxMarks, description } = req.body;
-  if (!title || !courseId || !dueDate) return res.status(400).json({ error: 'Missing required fields' });
-  res.json({ success: true, assignment: { id: 'NEW001', title, courseId, dueDate, maxMarks: maxMarks || 25, description, createdAt: new Date().toISOString() } });
+app.patch('/api/fees/:id/pay', auth, requireRole('student', 'admin'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE fees SET status = 'paid', paid_date = CURRENT_DATE,
+       receipt_no = 'RCP' || FLOOR(RANDOM()*900000+100000)::TEXT
+       WHERE id = $1 RETURNING *`,
+      [req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ─── Admin Routes ─────────────────────────────────────────────────────────────
-app.get('/api/admin/stats', authenticate, authorize('admin'), (req, res) => {
-  res.json({ stats: { totalStudents: 1960, totalFaculty: 76, totalDepartments: 8, totalCourses: 192, atRiskStudents: 45, activeUsers: 1820 } });
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTICES ROUTES
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/notices', auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT n.*, u.name as created_by_name
+       FROM notices n LEFT JOIN users u ON u.id = n.created_by
+       WHERE n.target_role = 'all' OR n.target_role = $1
+       ORDER BY n.created_at DESC LIMIT 50`,
+      [req.user.role]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.get('/api/admin/users', authenticate, authorize('admin'), (req, res) => {
-  res.json({ users: DEMO_USERS.map(({ password: _, ...u }) => u) });
+app.post('/api/notices', auth, requireRole('faculty', 'admin'), async (req, res) => {
+  try {
+    const { title, content, category, target_role, is_important } = req.body;
+    const { rows } = await pool.query(
+      `INSERT INTO notices (title, content, category, target_role, created_by, is_important)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [title, content, category || 'general', target_role || 'all', req.user.id, is_important || false]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.post('/api/admin/notices', authenticate, authorize('admin'), (req, res) => {
-  const { title, content, category, targetRoles } = req.body;
-  if (!title || !content) return res.status(400).json({ error: 'Title and content required' });
-  res.json({ success: true, notice: { id: 'N_NEW', title, content, category: category || 'general', targetRoles: targetRoles || ['student', 'faculty', 'admin'], publishedAt: new Date().toISOString(), publishedBy: req.user.name } });
+app.delete('/api/notices/:id', auth, requireRole('admin'), async (req, res) => {
+  try {
+    await pool.query('DELETE FROM notices WHERE id = $1', [req.params.id]);
+    res.json({ message: 'Notice deleted' });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-app.get('/api/admin/reports/attendance', authenticate, authorize('admin'), (req, res) => {
-  res.json({ report: { generated: new Date().toISOString(), data: [{ dept: 'CSE', avg: 87.3 }, { dept: 'ECE', avg: 82.1 }, { dept: 'ME', avg: 79.6 }] } });
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADMIN - USERS
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { role, search } = req.query;
+    let query = `SELECT u.id, u.name, u.email, u.role, u.university_id, u.phone,
+                        u.is_active, u.join_date, d.name as department_name
+                 FROM users u LEFT JOIN departments d ON d.id = u.department_id
+                 WHERE 1=1`;
+    const params = [];
+    if (role) { params.push(role); query += ` AND u.role = $${params.length}`; }
+    if (search) { params.push(`%${search}%`); query += ` AND (u.name ILIKE $${params.length} OR u.email ILIKE $${params.length} OR u.university_id ILIKE $${params.length})`; }
+    query += ' ORDER BY u.created_at DESC';
+    const { rows } = await pool.query(query, params);
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ─── Shared Routes ────────────────────────────────────────────────────────────
-app.get('/api/notices', authenticate, (req, res) => {
-  res.json({ notices: [
-    { id: 'N001', title: '🎓 End Semester Exam Schedule Released', category: 'exam', publishedBy: 'Examination Department', publishedAt: '2026-04-25T10:00:00', targetRoles: ['student', 'faculty'] },
-    { id: 'N002', title: '📚 Library Extended Hours During Exam Season', category: 'general', publishedBy: 'Library Administration', publishedAt: '2026-04-24T14:00:00', targetRoles: ['student', 'faculty'] },
-    { id: 'N004', title: '🏆 National Hackathon Registration Open', category: 'event', publishedBy: 'Student Affairs', publishedAt: '2026-04-22T11:00:00', targetRoles: ['student', 'faculty', 'admin'] },
-  ]});
+app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { name, email, role, university_id, department_id, phone, password } = req.body;
+    const password_hash = await bcrypt.hash(password || 'password123', 10);
+    const { rows } = await pool.query(
+      `INSERT INTO users (name, email, password_hash, role, university_id, department_id, phone)
+       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, role, university_id`,
+      [name, email.toLowerCase(), password_hash, role, university_id, department_id, phone]
+    );
+    res.status(201).json(rows[0]);
+  } catch (err) {
+    if (err.code === '23505') return res.status(409).json({ error: 'Email or University ID already exists' });
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ─── Health Check ─────────────────────────────────────────────────────────────
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date().toISOString(), service: 'CAAP 2.0 Backend — MIT ADT University' });
+app.patch('/api/admin/users/:id/toggle', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `UPDATE users SET is_active = NOT is_active WHERE id = $1 RETURNING id, name, is_active`,
+      [req.params.id]
+    );
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ─── 404 Handler ─────────────────────────────────────────────────────────────
-app.use('*', (req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADMIN - DEPARTMENTS
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/admin/departments', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT d.*,
+              COUNT(DISTINCT CASE WHEN u.role='student' THEN u.id END) as student_count,
+              COUNT(DISTINCT CASE WHEN u.role='faculty' THEN u.id END) as faculty_count
+       FROM departments d LEFT JOIN users u ON u.department_id = d.id
+       GROUP BY d.id ORDER BY d.name`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
-// ─── Error Handler ────────────────────────────────────────────────────────────
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Internal server error' });
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADMIN - STATS / DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/admin/stats', auth, requireRole('admin'), async (req, res) => {
+  try {
+    const [students, faculty, courses, departments, pendingFees] = await Promise.all([
+      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'student' AND is_active = true`),
+      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'faculty' AND is_active = true`),
+      pool.query(`SELECT COUNT(*) FROM courses`),
+      pool.query(`SELECT COUNT(*) FROM departments`),
+      pool.query(`SELECT COALESCE(SUM(amount),0) FROM fees WHERE status = 'pending'`),
+    ]);
+    res.json({
+      total_students: parseInt(students.rows[0].count),
+      total_faculty: parseInt(faculty.rows[0].count),
+      total_courses: parseInt(courses.rows[0].count),
+      total_departments: parseInt(departments.rows[0].count),
+      pending_fees: parseFloat(pendingFees.rows[0].coalesce),
+    });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// NOTIFICATIONS
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/notifications', auth, async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
+      [req.user.id]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+app.patch('/api/notifications/read-all', auth, async (req, res) => {
+  try {
+    await pool.query(`UPDATE notifications SET is_read = true WHERE user_id = $1`, [req.user.id]);
+    res.json({ message: 'All marked as read' });
+  } catch (err) {
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
+// ─── START SERVER ─────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
-  console.log(`\n🚀 CAAP 2.0 Backend running at http://localhost:${PORT}`);
-  console.log(`📚 MIT ADT University Academic Portal API`);
-  console.log(`🔑 Health check: http://localhost:${PORT}/api/health\n`);
+  console.log(`🚀 CAAP Backend running on port ${PORT}`);
 });

@@ -1,122 +1,93 @@
+import { useState, useEffect } from 'react';
 import { useAuthStore } from '../../store/authStore';
-import { mockCourses, mockStudents, mockAssignments, mockNotices } from '../../data/mockData';
-import { Users, BookOpen, FileText, Bell, TrendingUp, ClipboardCheck } from 'lucide-react';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
-
-const myCourses = mockCourses.slice(0, 3);
-const totalStudents = myCourses.reduce((a, c) => a + c.enrolledCount, 0);
-
-const performanceData = [
-  { name: 'CS501', avg: 82, pass: 95 },
-  { name: 'CS502', avg: 74, pass: 88 },
-  { name: 'CS505', avg: 79, pass: 91 },
-];
+import { coursesAPI, attendanceAPI, assignmentsAPI, adminAPI } from '../../services/api';
+import { Users, BookOpen, FileText, TrendingUp, ClipboardCheck } from 'lucide-react';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 
 export default function FacultyDashboard() {
   const { user } = useAuthStore();
-  const today = new Date().toLocaleDateString('en-IN', { weekday: 'long', day: 'numeric', month: 'long' });
+  const [courses, setCourses] = useState<any[]>([]);
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const stats = [
-    { label: 'Assigned Courses', value: myCourses.length, icon: BookOpen, color: '#8b5cf6' },
-    { label: 'Total Students', value: totalStudents, icon: Users, color: '#6366f1' },
-    { label: 'Pending Grades', value: 12, icon: ClipboardCheck, color: '#f59e0b' },
-    { label: 'Unread Notices', value: mockNotices.filter(n => !n.isRead && n.targetRoles.includes('faculty')).length, icon: Bell, color: '#06b6d4' },
-  ];
+  useEffect(() => {
+    Promise.all([coursesAPI.getAll(), assignmentsAPI.getAll()])
+      .then(([c, a]) => { setCourses(c.data); setAssignments(a.data); })
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  const totalStudents = courses.reduce((s: number, c: any) => s + (parseInt(c.enrolled_count) || 0), 0);
+
+  if (loading) return <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>Loading...</div>;
+
+  const chartData = courses.map((c: any) => ({ name: c.code, students: parseInt(c.enrolled_count) || 0 }));
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 className="font-jakarta" style={{ fontSize: 24, fontWeight: 800, background: 'linear-gradient(135deg,#f0f0ff,#8080c0)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-            Welcome, {user?.name?.split(' ').slice(0, 2).join(' ')} 👨‍🏫
-          </h2>
-          <p style={{ color: '#606080', fontSize: 13, marginTop: 4 }}>{today} · {user?.department}</p>
-        </div>
-        <div style={{ display: 'flex', gap: 8 }}>
-          <span className="badge badge-primary">{user?.universityId}</span>
-          <span className="badge" style={{ background: 'rgba(139,92,246,0.2)', color: '#c084fc', border: '1px solid rgba(139,92,246,0.3)' }}>Associate Professor</span>
-        </div>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <div>
+        <h1 style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+          Faculty Portal — {user?.name?.split(' ').slice(-1)[0]} 👨‍🏫
+        </h1>
+        <p style={{ color: 'var(--text-muted)', marginTop: '0.25rem' }}>{user?.university_id}</p>
       </div>
 
-      {/* Stats */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(200px,1fr))', gap: 16 }}>
-        {stats.map(s => (
-          <div key={s.label} className="stat-card" style={{ borderColor: `${s.color}20` }}>
-            <div style={{ position: 'absolute', top: 0, right: 0, width: 100, height: 100, borderRadius: '50%', background: s.color, filter: 'blur(40px)', opacity: 0.12 }} />
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', position: 'relative' }}>
-              <div>
-                <p style={{ fontSize: 12, color: '#a0a0c0', fontWeight: 500, marginBottom: 8, letterSpacing: '0.5px', textTransform: 'uppercase' }}>{s.label}</p>
-                <p style={{ fontSize: 32, fontWeight: 800, color: '#f0f0ff' }}>{s.value}</p>
-              </div>
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: `${s.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${s.color}30` }}>
-                <s.icon size={20} color={s.color} />
-              </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '1rem' }}>
+        {[
+          { label: 'My Courses', value: courses.length, icon: BookOpen, color: '#6366f1' },
+          { label: 'Total Students', value: totalStudents, icon: Users, color: '#10b981' },
+          { label: 'Assignments', value: assignments.length, icon: FileText, color: '#f59e0b' },
+          { label: 'Submissions', value: assignments.reduce((s: number, a: any) => s + (parseInt(a.submission_count) || 0), 0), icon: ClipboardCheck, color: '#8b5cf6' },
+        ].map(s => (
+          <div key={s.label} className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div style={{ width: 48, height: 48, borderRadius: 12, background: `${s.color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <s.icon size={22} color={s.color} />
+            </div>
+            <div>
+              <p style={{ fontSize: '1.5rem', fontWeight: 800, color: s.color }}>{s.value}</p>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{s.label}</p>
             </div>
           </div>
         ))}
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20 }}>
-        {/* Course Cards */}
-        <div className="glass-card" style={{ padding: 22 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 16, color: '#d0d0f0' }}>📚 My Courses</h3>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-            {myCourses.map((c, i) => {
-              const colors = ['#8b5cf6', '#6366f1', '#06b6d4'];
-              return (
-                <div key={c.id} style={{ display: 'flex', gap: 14, padding: '14px', background: 'rgba(255,255,255,0.03)', borderRadius: 12, border: '1px solid rgba(255,255,255,0.05)' }}>
-                  <div style={{ width: 40, height: 40, borderRadius: 10, background: `${colors[i]}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
-                    <BookOpen size={18} color={colors[i]} />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: '#e0e0f8' }}>{c.name}</div>
-                    <div style={{ fontSize: 11, color: '#606080', marginTop: 3 }}>{c.code} · {c.enrolledCount} students · {c.schedule}</div>
-                  </div>
-                  <span className="badge badge-primary" style={{ height: 'fit-content' }}>{c.credits}cr</span>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-
-        {/* Performance Chart */}
-        <div className="chart-container">
-          <h3 style={{ fontSize: 14, fontWeight: 700, marginBottom: 20, color: '#d0d0f0' }}>📊 Class Performance</h3>
-          <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={performanceData} barSize={24}>
+      {chartData.length > 0 && (
+        <div className="card">
+          <h2 style={{ fontWeight: 700, marginBottom: '1.5rem', color: 'var(--text-primary)', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <TrendingUp size={18} color="#6366f1" /> Enrollment per Course
+          </h2>
+          <ResponsiveContainer width="100%" height={240}>
+            <BarChart data={chartData}>
               <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
-              <XAxis dataKey="name" tick={{ fill: '#606080', fontSize: 11 }} axisLine={false} tickLine={false} />
-              <YAxis tick={{ fill: '#606080', fontSize: 11 }} axisLine={false} tickLine={false} domain={[0, 100]} />
-              <Tooltip contentStyle={{ background: '#1e1e2e', border: '1px solid rgba(255,255,255,0.08)', borderRadius: 10, fontSize: 12 }} />
-              <Bar dataKey="avg" name="Avg Score" radius={[4,4,0,0]}>
-                {performanceData.map((_, i) => <Cell key={i} fill={['#8b5cf6','#6366f1','#06b6d4'][i]} />)}
-              </Bar>
+              <XAxis dataKey="name" stroke="#94a3b8" tick={{ fontSize: 12 }} />
+              <YAxis stroke="#94a3b8" tick={{ fontSize: 12 }} />
+              <Tooltip contentStyle={{ background: '#1e293b', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: '#fff' }} />
+              <Bar dataKey="students" fill="#6366f1" radius={[6, 6, 0, 0]} />
             </BarChart>
           </ResponsiveContainer>
         </div>
-      </div>
+      )}
 
-      {/* At-risk students */}
-      <div className="glass-card" style={{ padding: 22 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 16 }}>
-          <h3 style={{ fontSize: 14, fontWeight: 700, color: '#d0d0f0' }}>⚠️ At-Risk Students</h3>
-          <span className="badge badge-danger">{mockStudents.filter(s => s.attendancePercentage < 75).length} students</span>
-        </div>
-        <table className="data-table">
-          <thead><tr><th>Student</th><th>ID</th><th>Dept</th><th>Attendance</th><th>CGPA</th><th>Action</th></tr></thead>
-          <tbody>
-            {mockStudents.filter(s => s.attendancePercentage < 80).slice(0, 5).map(s => (
-              <tr key={s.id}>
-                <td style={{ color: '#c0c0e0', fontWeight: 500 }}>{s.name}</td>
-                <td style={{ color: '#606080', fontSize: 12 }}>{s.universityId}</td>
-                <td style={{ color: '#a0a0c0' }}>{s.department.split(' ')[0]}</td>
-                <td><span style={{ color: s.attendancePercentage < 75 ? '#f87171' : '#fbbf24', fontWeight: 700 }}>{s.attendancePercentage}%</span></td>
-                <td style={{ color: '#818cf8', fontWeight: 600 }}>{s.cgpa}</td>
-                <td><button className="btn-ghost" style={{ padding: '4px 12px', fontSize: 11 }}>Notify</button></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="card">
+        <h2 style={{ fontWeight: 700, marginBottom: '1rem', color: 'var(--text-primary)' }}>My Courses</h2>
+        {courses.length === 0
+          ? <p style={{ color: 'var(--text-muted)', textAlign: 'center', padding: '2rem' }}>No courses assigned yet.</p>
+          : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {courses.map((c: any) => (
+                <div key={c.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0.75rem 1rem', background: 'rgba(255,255,255,0.03)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.06)' }}>
+                  <div>
+                    <p style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{c.name}</p>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{c.code} · Sem {c.semester}</p>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <p style={{ fontWeight: 700, color: '#10b981' }}>{c.enrolled_count || 0} students</p>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{c.credits} credits</p>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
       </div>
     </div>
   );

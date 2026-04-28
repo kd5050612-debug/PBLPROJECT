@@ -1,113 +1,131 @@
-import { useState } from 'react';
-import { mockNotices } from '../../data/mockData';
-import { Plus, Bell, AlertTriangle, GraduationCap, Trophy, BookOpen, Megaphone } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { noticesAPI } from '../../services/api';
+import { Plus, Bell, Trash2, AlertTriangle, GraduationCap, Trophy, BookOpen, Calendar } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { formatDistanceToNow } from 'date-fns';
 
-const catConfig: Record<string, { icon: any; color: string }> = {
-  exam:     { icon: GraduationCap, color: '#6366f1' },
-  general:  { icon: Bell,          color: '#06b6d4' },
-  urgent:   { icon: AlertTriangle, color: '#ef4444' },
-  event:    { icon: Trophy,        color: '#f59e0b' },
-  academic: { icon: BookOpen,      color: '#10b981' },
-};
+const CAT_ICONS: Record<string, any> = { exam: BookOpen, event: Calendar, academic: GraduationCap, holiday: Trophy, result: Trophy, general: Bell };
+const CAT_COLORS: Record<string, string> = { exam: '#ef4444', event: '#6366f1', academic: '#10b981', holiday: '#f59e0b', result: '#8b5cf6', general: '#94a3b8' };
 
 export default function AdminNotices() {
+  const [notices, setNotices] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ title: '', category: 'general', content: '', targetRoles: ['student', 'faculty', 'admin'] });
+  const [form, setForm] = useState({ title: '', content: '', category: 'general', target_role: 'all', is_important: false });
+  const [submitting, setSubmitting] = useState(false);
 
-  const handlePublish = (e: React.FormEvent) => {
+  useEffect(() => {
+    noticesAPI.getAll().then(r => setNotices(r.data)).catch(console.error).finally(() => setLoading(false));
+  }, []);
+
+  const handleCreate = async (e: React.FormEvent) => {
     e.preventDefault();
-    toast.success('Notice published successfully to all target users!');
-    setShowForm(false);
-    setForm({ title: '', category: 'general', content: '', targetRoles: ['student', 'faculty', 'admin'] });
+    if (!form.title || !form.content) return toast.error('Title and content required');
+    setSubmitting(true);
+    try {
+      const { data } = await noticesAPI.create(form);
+      setNotices(prev => [data, ...prev]);
+      setShowForm(false);
+      setForm({ title: '', content: '', category: 'general', target_role: 'all', is_important: false });
+      toast.success('Notice published!');
+    } catch { toast.error('Failed to publish notice'); }
+    finally { setSubmitting(false); }
   };
 
+  const handleDelete = async (id: string) => {
+    try {
+      await noticesAPI.delete(id);
+      setNotices(prev => prev.filter(n => n.id !== id));
+      toast.success('Notice deleted');
+    } catch { toast.error('Failed to delete'); }
+  };
+
+  if (loading) return <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>Loading notices...</div>;
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 12 }}>
-        <div>
-          <h2 className="font-jakarta" style={{ fontSize: 22, fontWeight: 800, color: '#f0f0ff' }}>Notice Board Management</h2>
-          <p style={{ color: '#606080', fontSize: 13, marginTop: 4 }}>Publish and manage university-wide notices</p>
-        </div>
-        <button className="btn-primary" style={{ padding: '10px 20px', fontSize: 13, display: 'flex', alignItems: 'center', gap: 8 }} onClick={() => setShowForm(s => !s)}>
-          <Megaphone size={14} /> Publish Notice
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <h1 style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-primary)' }}>Notice Management</h1>
+        <button className="btn-primary" onClick={() => setShowForm(!showForm)} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          <Plus size={18} />{showForm ? 'Cancel' : 'New Notice'}
         </button>
       </div>
 
-      {/* Publish Form */}
       {showForm && (
-        <div className="glass-card" style={{ padding: 28, animation: 'fadeInUp 0.3s ease' }}>
-          <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 20, color: '#d0d0f0' }}>📢 New Notice</h3>
-          <form onSubmit={handlePublish} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+        <div className="card">
+          <h2 style={{ fontWeight: 700, marginBottom: '1.25rem', color: 'var(--text-primary)' }}>Publish Notice</h2>
+          <form onSubmit={handleCreate} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <div>
+              <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.4rem' }}>Title *</label>
+              <input value={form.title} onChange={e => setForm(p => ({ ...p, title: e.target.value }))} placeholder="Notice title"
+                style={{ width: '100%', padding: '0.6rem 0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: 'var(--text-primary)', fontSize: '0.875rem' }} />
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
               <div>
-                <label style={{ display: 'block', fontSize: 12, color: '#a0a0c0', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>Title</label>
-                <input className="input-field" value={form.title} onChange={e => setForm(f => ({ ...f, title: e.target.value }))} placeholder="Notice title..." required />
+                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.4rem' }}>Category</label>
+                <select value={form.category} onChange={e => setForm(p => ({ ...p, category: e.target.value }))}
+                  style={{ width: '100%', padding: '0.6rem 0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: 'var(--text-primary)', fontSize: '0.875rem' }}>
+                  {['general','exam','event','academic','holiday','result'].map(c => <option key={c} value={c} style={{ background: '#1e293b', textTransform: 'capitalize' }}>{c}</option>)}
+                </select>
               </div>
               <div>
-                <label style={{ display: 'block', fontSize: 12, color: '#a0a0c0', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>Category</label>
-                <select className="input-field" value={form.category} onChange={e => setForm(f => ({ ...f, category: e.target.value }))} style={{ cursor: 'pointer' }}>
-                  {Object.keys(catConfig).map(c => <option key={c} value={c} style={{ background: '#1e1e2e', textTransform: 'capitalize' }}>{c.charAt(0).toUpperCase() + c.slice(1)}</option>)}
+                <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.4rem' }}>Target Audience</label>
+                <select value={form.target_role} onChange={e => setForm(p => ({ ...p, target_role: e.target.value }))}
+                  style={{ width: '100%', padding: '0.6rem 0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: 'var(--text-primary)', fontSize: '0.875rem' }}>
+                  {['all','student','faculty','admin'].map(r => <option key={r} value={r} style={{ background: '#1e293b', textTransform: 'capitalize' }}>{r}</option>)}
                 </select>
               </div>
             </div>
             <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#a0a0c0', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>Target Audience</label>
-              <div style={{ display: 'flex', gap: 12 }}>
-                {(['student', 'faculty', 'admin'] as const).map(role => (
-                  <label key={role} style={{ display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer' }}>
-                    <input type="checkbox" checked={form.targetRoles.includes(role)}
-                      onChange={e => setForm(f => ({ ...f, targetRoles: e.target.checked ? [...f.targetRoles, role] : f.targetRoles.filter(r => r !== role) }))}
-                      style={{ accentColor: '#6366f1', width: 16, height: 16 }} />
-                    <span style={{ fontSize: 13, color: '#c0c0e0', textTransform: 'capitalize' }}>{role}</span>
-                  </label>
-                ))}
-              </div>
+              <label style={{ fontSize: '0.8rem', color: 'var(--text-muted)', display: 'block', marginBottom: '0.4rem' }}>Content *</label>
+              <textarea value={form.content} onChange={e => setForm(p => ({ ...p, content: e.target.value }))} rows={4} placeholder="Notice details..."
+                style={{ width: '100%', padding: '0.6rem 0.75rem', background: 'rgba(255,255,255,0.05)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: 8, color: 'var(--text-primary)', fontSize: '0.875rem', resize: 'vertical' }} />
             </div>
-            <div>
-              <label style={{ display: 'block', fontSize: 12, color: '#a0a0c0', marginBottom: 8, fontWeight: 600, textTransform: 'uppercase' }}>Content</label>
-              <textarea className="input-field" rows={4} value={form.content} onChange={e => setForm(f => ({ ...f, content: e.target.value }))} placeholder="Write the full notice content here..." required style={{ resize: 'vertical' }} />
-            </div>
-            <div style={{ display: 'flex', gap: 10 }}>
-              <button type="submit" className="btn-primary" style={{ flex: 1, padding: '12px' }}>Publish Notice</button>
-              <button type="button" className="btn-ghost" style={{ padding: '12px 24px' }} onClick={() => setShowForm(false)}>Cancel</button>
-            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', cursor: 'pointer' }}>
+              <input type="checkbox" checked={form.is_important} onChange={e => setForm(p => ({ ...p, is_important: e.target.checked }))} />
+              <span style={{ fontSize: '0.875rem', color: 'var(--text-secondary)' }}>Mark as Important</span>
+            </label>
+            <button type="submit" className="btn-primary" disabled={submitting} style={{ alignSelf: 'flex-start' }}>
+              {submitting ? 'Publishing...' : 'Publish Notice'}
+            </button>
           </form>
         </div>
       )}
 
-      {/* Notice List */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-        {mockNotices.map(notice => {
-          const cfg = catConfig[notice.category] || catConfig.general;
-          const Icon = cfg.icon;
-          return (
-            <div key={notice.id} className="glass-card" style={{ padding: 22 }}>
-              <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start' }}>
-                <div style={{ width: 42, height: 42, borderRadius: 12, background: `${cfg.color}20`, display: 'flex', alignItems: 'center', justifyContent: 'center', border: `1px solid ${cfg.color}30`, flexShrink: 0 }}>
-                  <Icon size={18} color={cfg.color} />
-                </div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 12, flexWrap: 'wrap', marginBottom: 8 }}>
-                    <h3 style={{ fontSize: 14, fontWeight: 700, color: '#f0f0ff' }}>{notice.title}</h3>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      <span className={`badge badge-${notice.category === 'urgent' ? 'danger' : notice.category === 'exam' ? 'primary' : notice.category === 'event' ? 'warning' : 'success'}`} style={{ textTransform: 'capitalize' }}>{notice.category}</span>
-                      <button className="btn-ghost" style={{ padding: '4px 12px', fontSize: 11 }} onClick={() => toast.success('Notice edited!')}>Edit</button>
-                      <button style={{ padding: '4px 12px', fontSize: 11, background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', borderRadius: 6, color: '#f87171', cursor: 'pointer' }} onClick={() => toast.error('Notice removed!')}>Remove</button>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {notices.length === 0
+          ? <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>No notices published yet.</div>
+          : notices.map((n: any) => {
+            const Icon = CAT_ICONS[n.category] || Bell;
+            const color = CAT_COLORS[n.category] || '#94a3b8';
+            return (
+              <div key={n.id} className="card" style={{ border: n.is_important ? '1px solid rgba(239,68,68,0.35)' : undefined }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+                  <div style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                    <div style={{ width: 40, height: 40, borderRadius: 10, background: `${color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}>
+                      <Icon size={18} color={color} />
+                    </div>
+                    <div>
+                      <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', marginBottom: '0.25rem' }}>
+                        <p style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{n.title}</p>
+                        {n.is_important && <AlertTriangle size={14} color="#ef4444" />}
+                        <span style={{ padding: '0.1rem 0.5rem', borderRadius: 8, fontSize: '0.65rem', fontWeight: 700, background: `${color}15`, color }}>{n.category}</span>
+                        <span style={{ padding: '0.1rem 0.5rem', borderRadius: 8, fontSize: '0.65rem', background: 'rgba(255,255,255,0.08)', color: 'var(--text-muted)' }}>→ {n.target_role}</span>
+                      </div>
+                      <p style={{ color: 'var(--text-secondary)', fontSize: '0.8rem', marginBottom: '0.25rem' }}>{n.content}</p>
+                      <p style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>
+                        By {n.created_by_name || 'Admin'} · {formatDistanceToNow(new Date(n.created_at), { addSuffix: true })}
+                      </p>
                     </div>
                   </div>
-                  <p style={{ fontSize: 13, color: '#a0a0b0', lineHeight: 1.6, marginBottom: 10 }}>{notice.content}</p>
-                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 11, color: '#606080' }}>By {notice.publishedBy}</span>
-                    <span style={{ fontSize: 11, color: '#606080' }}>{formatDistanceToNow(new Date(notice.publishedAt), { addSuffix: true })}</span>
-                    <span style={{ fontSize: 11, color: '#606080' }}>To: {notice.targetRoles.join(', ')}</span>
-                  </div>
+                  <button onClick={() => handleDelete(n.id)}
+                    style={{ padding: '0.4rem', border: '1px solid rgba(239,68,68,0.25)', borderRadius: 8, background: 'transparent', color: '#ef4444', cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                    <Trash2 size={16} />
+                  </button>
                 </div>
               </div>
-            </div>
-          );
-        })}
+            );
+          })}
       </div>
     </div>
   );

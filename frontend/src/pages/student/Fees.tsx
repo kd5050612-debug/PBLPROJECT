@@ -1,79 +1,106 @@
-import { mockFeeRecords } from '../../data/mockData';
-import { CreditCard, CheckCircle2, Clock, AlertTriangle, Download, IndianRupee } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { feesAPI } from '../../services/api';
+import { CreditCard, CheckCircle2, Clock, AlertTriangle, IndianRupee } from 'lucide-react';
 import toast from 'react-hot-toast';
 
-const fmt = (n: number) => `₹${n.toLocaleString('en-IN')}`;
+const fmt = (n: number) => `₹${Number(n).toLocaleString('en-IN')}`;
 
 export default function StudentFees() {
-  const handlePay = () => toast.success('Redirecting to payment gateway...');
+  const [fees, setFees] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [paying, setPaying] = useState<string | null>(null);
+
+  useEffect(() => {
+    feesAPI.getAll().then(r => setFees(r.data)).catch(console.error).finally(() => setLoading(false));
+  }, []);
+
+  const handlePay = async (id: string) => {
+    setPaying(id);
+    try {
+      const { data } = await feesAPI.pay(id);
+      setFees(prev => prev.map(f => f.id === id ? data : f));
+      toast.success('Payment successful! Receipt generated.');
+    } catch {
+      toast.error('Payment failed. Try again.');
+    } finally {
+      setPaying(null);
+    }
+  };
+
+  if (loading) return <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>Loading fees...</div>;
+
+  const total = fees.reduce((s, f) => s + parseFloat(f.amount), 0);
+  const paid = fees.filter(f => f.status === 'paid').reduce((s, f) => s + parseFloat(f.amount), 0);
+  const pending = fees.filter(f => f.status !== 'paid').reduce((s, f) => s + parseFloat(f.amount), 0);
+  const pct = total > 0 ? Math.round((paid / total) * 100) : 0;
+
+  const STATUS = { paid: { color: '#10b981', icon: CheckCircle2 }, pending: { color: '#f59e0b', icon: Clock }, overdue: { color: '#ef4444', icon: AlertTriangle } } as any;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
-      <div>
-        <h2 className="font-jakarta" style={{ fontSize: 22, fontWeight: 800, color: '#f0f0ff' }}>Fee Payment</h2>
-        <p style={{ color: '#606080', fontSize: 13, marginTop: 4 }}>Manage your semester fees and payment history</p>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      <h1 style={{ fontSize: '1.75rem', fontWeight: 800, color: 'var(--text-primary)' }}>Fee Management</h1>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(180px,1fr))', gap: '1rem' }}>
+        {[
+          { label: 'Total Fees', value: fmt(total), color: '#6366f1', icon: IndianRupee },
+          { label: 'Amount Paid', value: fmt(paid), color: '#10b981', icon: CheckCircle2 },
+          { label: 'Amount Due', value: fmt(pending), color: pending > 0 ? '#ef4444' : '#10b981', icon: Clock },
+        ].map(s => (
+          <div key={s.label} className="card" style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
+            <div style={{ width: 44, height: 44, borderRadius: 12, background: `${s.color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+              <s.icon size={22} color={s.color} />
+            </div>
+            <div>
+              <p style={{ fontSize: '1.25rem', fontWeight: 800, color: s.color }}>{s.value}</p>
+              <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{s.label}</p>
+            </div>
+          </div>
+        ))}
       </div>
 
-      {mockFeeRecords.map(fee => (
-        <div key={fee.id} className="glass-card" style={{ padding: 28 }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 24, flexWrap: 'wrap', gap: 12 }}>
-            <div>
-              <h3 style={{ fontSize: 16, fontWeight: 700, color: '#f0f0ff', marginBottom: 4 }}>{fee.semester}</h3>
-              <p style={{ fontSize: 12, color: '#606080' }}>Due Date: {fee.dueDate}</p>
-            </div>
-            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
-              <span className={`badge badge-${fee.status === 'paid' ? 'success' : fee.status === 'partial' ? 'warning' : 'danger'}`}>
-                {fee.status === 'paid' ? <CheckCircle2 size={10} /> : fee.status === 'partial' ? <Clock size={10} /> : <AlertTriangle size={10} />}
-                {fee.status}
-              </span>
-              <button className="btn-ghost" style={{ padding: '6px 14px', fontSize: 12, display: 'flex', alignItems: 'center', gap: 6 }}>
-                <Download size={13} /> Receipt
-              </button>
-            </div>
-          </div>
-
-          {/* Fee breakdown */}
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill,minmax(220px,1fr))', gap: 10, marginBottom: 24 }}>
-            {fee.items.map(item => (
-              <div key={item.label} style={{ display: 'flex', justifyContent: 'space-between', padding: '10px 14px', background: 'rgba(255,255,255,0.03)', borderRadius: 10, border: '1px solid rgba(255,255,255,0.05)' }}>
-                <span style={{ fontSize: 13, color: '#a0a0c0' }}>{item.label}</span>
-                <span style={{ fontSize: 13, fontWeight: 600, color: '#d0d0f0' }}>{fmt(item.amount)}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Totals */}
-          <div style={{ background: 'rgba(99,102,241,0.08)', border: '1px solid rgba(99,102,241,0.2)', borderRadius: 14, padding: 20 }}>
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 20 }}>
-              {[
-                { label: 'Total Amount', value: fmt(fee.amount), color: '#f0f0ff' },
-                { label: 'Amount Paid',  value: fmt(fee.paid),   color: '#34d399' },
-                { label: 'Amount Due',   value: fmt(fee.due),    color: fee.due > 0 ? '#f87171' : '#34d399' },
-              ].map(({ label, value, color }) => (
-                <div key={label} style={{ textAlign: 'center' }}>
-                  <div style={{ fontSize: 11, color: '#808090', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</div>
-                  <div style={{ fontSize: 22, fontWeight: 800, color }}>{value}</div>
-                </div>
-              ))}
-            </div>
-            {/* Progress bar */}
-            <div style={{ marginTop: 20 }}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6 }}>
-                <span style={{ fontSize: 12, color: '#808090' }}>Payment Progress</span>
-                <span style={{ fontSize: 12, color: '#818cf8' }}>{Math.round((fee.paid / fee.amount) * 100)}%</span>
-              </div>
-              <div className="progress-bar" style={{ height: 8 }}>
-                <div className="progress-fill" style={{ width: `${(fee.paid / fee.amount) * 100}%`, background: fee.status === 'paid' ? 'linear-gradient(90deg,#10b981,#34d399)' : 'linear-gradient(90deg,#f59e0b,#fbbf24)' }} />
-              </div>
-            </div>
-            {fee.due > 0 && (
-              <button className="btn-primary" style={{ width: '100%', marginTop: 20, padding: '14px', fontSize: 14, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8 }} onClick={handlePay}>
-                <CreditCard size={16} /> Pay {fmt(fee.due)} Now
-              </button>
-            )}
-          </div>
+      <div className="card">
+        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+          <span style={{ color: 'var(--text-muted)', fontSize: '0.875rem' }}>Payment Progress</span>
+          <span style={{ color: '#10b981', fontWeight: 700 }}>{pct}%</span>
         </div>
-      ))}
+        <div style={{ height: 10, background: 'rgba(255,255,255,0.08)', borderRadius: 5, overflow: 'hidden' }}>
+          <div style={{ height: '100%', width: `${pct}%`, background: 'linear-gradient(90deg,#6366f1,#10b981)', borderRadius: 5, transition: 'width 0.6s ease' }} />
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+        {fees.length === 0
+          ? <div className="card" style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>No fee records found.</div>
+          : fees.map((f: any) => {
+            const s = STATUS[f.status] || STATUS.pending;
+            return (
+              <div key={f.id} className="card" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: '1rem' }}>
+                <div style={{ display: 'flex', gap: '1rem', alignItems: 'center' }}>
+                  <div style={{ width: 44, height: 44, borderRadius: 12, background: `${s.color}15`, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <CreditCard size={20} color={s.color} />
+                  </div>
+                  <div>
+                    <p style={{ fontWeight: 700, color: 'var(--text-primary)' }}>{f.fee_type}</p>
+                    <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Due: {new Date(f.due_date).toLocaleDateString('en-IN')} · {f.academic_year}</p>
+                    {f.receipt_no && <p style={{ fontSize: '0.7rem', color: '#10b981' }}>Receipt: {f.receipt_no}</p>}
+                  </div>
+                </div>
+                <div style={{ textAlign: 'right', display: 'flex', alignItems: 'center', gap: '1rem' }}>
+                  <div>
+                    <p style={{ fontWeight: 800, color: 'var(--text-primary)', fontSize: '1.1rem' }}>{fmt(f.amount)}</p>
+                    <span style={{ padding: '0.2rem 0.6rem', borderRadius: 12, fontSize: '0.7rem', fontWeight: 700, background: `${s.color}20`, color: s.color }}>{f.status}</span>
+                  </div>
+                  {f.status !== 'paid' && (
+                    <button className="btn-primary" onClick={() => handlePay(f.id)} disabled={paying === f.id}
+                      style={{ fontSize: '0.8rem', padding: '0.5rem 1rem', whiteSpace: 'nowrap' }}>
+                      {paying === f.id ? 'Processing...' : 'Pay Now'}
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+      </div>
     </div>
   );
 }
