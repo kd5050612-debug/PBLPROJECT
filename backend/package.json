@@ -1,0 +1,13 @@
+{
+  "name": "caap-backend",
+  "version": "1.0.0",
+  "description": "MIT ADT CAAP 2.0 Backend API",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "keywords": [],
+  "author": "MIT ADT University",
+  "license": "ISC"
+}
