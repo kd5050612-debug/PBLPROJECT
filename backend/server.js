@@ -4,25 +4,22 @@ const helmet = require('helmet');
 const morgan = require('morgan');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Pool } = require('pg');
+const { createClient } = require('@supabase/supabase-js');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-// ─── DB CONNECTION ────────────────────────────────────────────────────────────
-const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : false,
-});
+// ─── SUPABASE CLIENT ──────────────────────────────────────────────────────────
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_KEY
+);
 
-pool.connect((err) => {
-  if (err) console.error('❌ DB connection error:', err.message);
-  else console.log('✅ Connected to PostgreSQL database');
-});
+console.log('🔗 Supabase client initialized:', process.env.SUPABASE_URL);
 
 // ─── MIDDLEWARE ───────────────────────────────────────────────────────────────
-app.use(helmet());
+app.use(helmet({ crossOriginResourcePolicy: false }));
 app.use(cors({ origin: process.env.FRONTEND_URL || '*', credentials: true }));
 app.use(express.json());
 app.use(morgan('dev'));
@@ -40,33 +37,35 @@ const auth = (req, res, next) => {
 };
 
 const requireRole = (...roles) => (req, res, next) => {
-  if (!roles.includes(req.user.role))
-    return res.status(403).json({ error: 'Forbidden' });
+  if (!roles.includes(req.user.role)) return res.status(403).json({ error: 'Forbidden' });
   next();
 };
 
 // ─── HEALTH CHECK ─────────────────────────────────────────────────────────────
-app.get('/api/health', (req, res) => res.json({ status: 'ok', timestamp: new Date() }));
+app.get('/api/health', async (req, res) => {
+  const { data, error } = await supabase.from('departments').select('count', { count: 'exact', head: true });
+  res.json({ status: error ? 'db_error' : 'ok', error: error?.message, timestamp: new Date() });
+});
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// AUTH ROUTES
+// AUTH
 // ═══════════════════════════════════════════════════════════════════════════════
 app.post('/api/auth/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    if (!email || !password)
-      return res.status(400).json({ error: 'Email and password required' });
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
 
-    const { rows } = await pool.query(
-      `SELECT u.*, d.name as department_name, d.code as department_code
-       FROM users u LEFT JOIN departments d ON d.id = u.department_id
-       WHERE u.email = $1 AND u.is_active = true`,
-      [email.toLowerCase()]
-    );
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('*, departments(name, code)')
+      .eq('email', email.toLowerCase())
+      .eq('is_active', true)
+      .limit(1);
 
-    if (!rows.length) return res.status(401).json({ error: 'Invalid credentials' });
-    const user = rows[0];
+    if (error) return res.status(500).json({ error: error.message });
+    if (!users || users.length === 0) return res.status(401).json({ error: 'Invalid credentials' });
 
+    const user = users[0];
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
 
@@ -85,370 +84,214 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 app.get('/api/auth/me', auth, async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT u.id, u.name, u.email, u.role, u.university_id, u.phone, u.avatar, u.join_date,
-              d.name as department_name, d.code as department_code
-       FROM users u LEFT JOIN departments d ON d.id = u.department_id
-       WHERE u.id = $1`,
-      [req.user.id]
-    );
-    if (!rows.length) return res.status(404).json({ error: 'User not found' });
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const { data, error } = await supabase
+    .from('users')
+    .select('id, name, email, role, university_id, phone, avatar, join_date, departments(name, code)')
+    .eq('id', req.user.id)
+    .single();
+  if (error) return res.status(404).json({ error: 'User not found' });
+  res.json(data);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// COURSES ROUTES
+// COURSES
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/courses', auth, async (req, res) => {
   try {
-    let query, params;
-    if (req.user.role === 'student') {
-      query = `SELECT c.*, u.name as faculty_name, d.name as department_name
-               FROM courses c
-               JOIN enrollments e ON e.course_id = c.id AND e.student_id = $1
-               LEFT JOIN users u ON u.id = c.faculty_id
-               LEFT JOIN departments d ON d.id = c.department_id
-               ORDER BY c.code`;
-      params = [req.user.id];
-    } else if (req.user.role === 'faculty') {
-      query = `SELECT c.*, COUNT(e.id) as enrolled_count, d.name as department_name
-               FROM courses c
-               LEFT JOIN enrollments e ON e.course_id = c.id
-               LEFT JOIN departments d ON d.id = c.department_id
-               WHERE c.faculty_id = $1
-               GROUP BY c.id, d.name ORDER BY c.code`;
-      params = [req.user.id];
-    } else {
-      query = `SELECT c.*, u.name as faculty_name, COUNT(e.id) as enrolled_count, d.name as department_name
-               FROM courses c
-               LEFT JOIN users u ON u.id = c.faculty_id
-               LEFT JOIN enrollments e ON e.course_id = c.id
-               LEFT JOIN departments d ON d.id = c.department_id
-               GROUP BY c.id, u.name, d.name ORDER BY c.code`;
-      params = [];
-    }
-    const { rows } = await pool.query(query, params);
-    res.json(rows);
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
+    let query = supabase.from('courses').select('*, users(name), departments(name)');
+    if (req.user.role === 'faculty') query = query.eq('faculty_id', req.user.id);
+    const { data, error } = await query.order('code');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ATTENDANCE ROUTES
+// ATTENDANCE
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/attendance/summary', auth, async (req, res) => {
-  try {
-    const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
-    const { rows } = await pool.query(
-      `SELECT * FROM attendance_summary WHERE student_id = $1`,
-      [studentId]
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
+  const { data, error } = await supabase
+    .from('attendance_summary')
+    .select('*')
+    .eq('student_id', studentId);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
 app.get('/api/attendance', auth, async (req, res) => {
-  try {
-    const { course_id, date } = req.query;
-    let query = `SELECT a.*, u.name as student_name, u.university_id
-                 FROM attendance a JOIN users u ON u.id = a.student_id
-                 WHERE 1=1`;
-    const params = [];
-    if (course_id) { params.push(course_id); query += ` AND a.course_id = $${params.length}`; }
-    if (date) { params.push(date); query += ` AND a.date = $${params.length}`; }
-    if (req.user.role === 'student') { params.push(req.user.id); query += ` AND a.student_id = $${params.length}`; }
-    query += ' ORDER BY a.date DESC';
-    const { rows } = await pool.query(query, params);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  let query = supabase.from('attendance').select('*, users(name, university_id)');
+  if (req.query.course_id) query = query.eq('course_id', req.query.course_id);
+  if (req.query.date) query = query.eq('date', req.query.date);
+  if (req.user.role === 'student') query = query.eq('student_id', req.user.id);
+  const { data, error } = await query.order('date', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
 app.post('/api/attendance', auth, requireRole('faculty', 'admin'), async (req, res) => {
-  try {
-    const { records, course_id, date } = req.body;
-    // records = [{ student_id, status }]
-    const results = [];
-    for (const rec of records) {
-      const { rows } = await pool.query(
-        `INSERT INTO attendance (student_id, course_id, date, status, marked_by)
-         VALUES ($1, $2, $3, $4, $5)
-         ON CONFLICT (student_id, course_id, date) DO UPDATE SET status = $4, marked_by = $5
-         RETURNING *`,
-        [rec.student_id, course_id, date, rec.status, req.user.id]
-      );
-      results.push(rows[0]);
-    }
-    res.json({ saved: results.length, records: results });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Server error' });
-  }
+  const { records, course_id, date } = req.body;
+  const rows = records.map(r => ({
+    student_id: r.student_id, course_id, date, status: r.status, marked_by: req.user.id
+  }));
+  const { data, error } = await supabase.from('attendance').upsert(rows, { onConflict: 'student_id,course_id,date' });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ saved: rows.length });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// ASSIGNMENTS ROUTES
+// ASSIGNMENTS
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/assignments', auth, async (req, res) => {
   try {
-    let query, params = [];
-    if (req.user.role === 'student') {
-      query = `SELECT a.*, c.name as course_name, c.code as course_code,
-                      s.status as submission_status, s.marks_obtained, s.submitted_at
-               FROM assignments a
-               JOIN courses c ON c.id = a.course_id
-               JOIN enrollments e ON e.course_id = c.id AND e.student_id = $1
-               LEFT JOIN submissions s ON s.assignment_id = a.id AND s.student_id = $1
-               ORDER BY a.due_date`;
-      params = [req.user.id];
-    } else if (req.user.role === 'faculty') {
-      query = `SELECT a.*, c.name as course_name, c.code as course_code,
-                      COUNT(s.id) as submission_count
-               FROM assignments a
-               JOIN courses c ON c.id = a.course_id AND c.faculty_id = $1
-               LEFT JOIN submissions s ON s.assignment_id = a.id
-               GROUP BY a.id, c.name, c.code ORDER BY a.due_date DESC`;
-      params = [req.user.id];
-    } else {
-      query = `SELECT a.*, c.name as course_name, u.name as faculty_name
-               FROM assignments a JOIN courses c ON c.id = a.course_id
-               LEFT JOIN users u ON u.id = a.faculty_id ORDER BY a.created_at DESC`;
+    let query = supabase.from('assignments').select('*, courses(name, code)');
+    if (req.user.role === 'faculty') query = query.eq('faculty_id', req.user.id);
+    const { data, error } = await query.order('due_date');
+    if (error) return res.status(500).json({ error: error.message });
+
+    // For students, also get submission status
+    if (req.user.role === 'student' && data) {
+      const ids = data.map(a => a.id);
+      const { data: subs } = await supabase.from('submissions').select('*').eq('student_id', req.user.id).in('assignment_id', ids);
+      const subMap = {};
+      (subs || []).forEach(s => subMap[s.assignment_id] = s);
+      const enriched = data.map(a => ({ ...a, submission_status: subMap[a.id]?.status || 'pending', marks_obtained: subMap[a.id]?.marks_obtained || null }));
+      return res.json(enriched);
     }
-    const { rows } = await pool.query(query, params);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+    res.json(data || []);
+  } catch (err) { res.status(500).json({ error: 'Server error' }); }
 });
 
 app.post('/api/assignments', auth, requireRole('faculty', 'admin'), async (req, res) => {
-  try {
-    const { title, description, course_id, due_date, max_marks } = req.body;
-    const { rows } = await pool.query(
-      `INSERT INTO assignments (title, description, course_id, faculty_id, due_date, max_marks)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [title, description, course_id, req.user.id, due_date, max_marks || 100]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const { title, description, course_id, due_date, max_marks } = req.body;
+  const { data, error } = await supabase.from('assignments')
+    .insert({ title, description, course_id, faculty_id: req.user.id, due_date, max_marks: max_marks || 100 })
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json(data);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// GRADES ROUTES
+// GRADES
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/grades', auth, async (req, res) => {
-  try {
-    const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
-    const { rows } = await pool.query(
-      `SELECT g.*, c.name as course_name, c.code as course_code, c.credits
-       FROM grades g JOIN courses c ON c.id = g.course_id
-       WHERE g.student_id = $1 ORDER BY g.semester, c.name`,
-      [studentId]
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
+  const { data, error } = await supabase.from('grades')
+    .select('*, courses(name, code, credits)')
+    .eq('student_id', studentId)
+    .order('semester');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// FEES ROUTES
+// FEES
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/fees', auth, async (req, res) => {
-  try {
-    const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
-    const { rows } = await pool.query(
-      `SELECT * FROM fees WHERE student_id = $1 ORDER BY due_date DESC`,
-      [studentId]
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const studentId = req.user.role === 'student' ? req.user.id : req.query.student_id;
+  const { data, error } = await supabase.from('fees').select('*').eq('student_id', studentId).order('due_date', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
-app.patch('/api/fees/:id/pay', auth, requireRole('student', 'admin'), async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `UPDATE fees SET status = 'paid', paid_date = CURRENT_DATE,
-       receipt_no = 'RCP' || FLOOR(RANDOM()*900000+100000)::TEXT
-       WHERE id = $1 RETURNING *`,
-      [req.params.id]
-    );
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+app.patch('/api/fees/:id/pay', auth, async (req, res) => {
+  const receiptNo = 'RCP' + Math.floor(Math.random() * 900000 + 100000);
+  const { data, error } = await supabase.from('fees')
+    .update({ status: 'paid', paid_date: new Date().toISOString().split('T')[0], receipt_no: receiptNo })
+    .eq('id', req.params.id).select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// NOTICES ROUTES
+// NOTICES
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/notices', auth, async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT n.*, u.name as created_by_name
-       FROM notices n LEFT JOIN users u ON u.id = n.created_by
-       WHERE n.target_role = 'all' OR n.target_role = $1
-       ORDER BY n.created_at DESC LIMIT 50`,
-      [req.user.role]
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const { data, error } = await supabase.from('notices')
+    .select('*, users(name)')
+    .or(`target_role.eq.all,target_role.eq.${req.user.role}`)
+    .order('created_at', { ascending: false })
+    .limit(50);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
 app.post('/api/notices', auth, requireRole('faculty', 'admin'), async (req, res) => {
-  try {
-    const { title, content, category, target_role, is_important } = req.body;
-    const { rows } = await pool.query(
-      `INSERT INTO notices (title, content, category, target_role, created_by, is_important)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [title, content, category || 'general', target_role || 'all', req.user.id, is_important || false]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const { title, content, category, target_role, is_important } = req.body;
+  const { data, error } = await supabase.from('notices')
+    .insert({ title, content, category: category || 'general', target_role: target_role || 'all', created_by: req.user.id, is_important: is_important || false })
+    .select().single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.status(201).json(data);
 });
 
 app.delete('/api/notices/:id', auth, requireRole('admin'), async (req, res) => {
-  try {
-    await pool.query('DELETE FROM notices WHERE id = $1', [req.params.id]);
-    res.json({ message: 'Notice deleted' });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN - USERS
-// ═══════════════════════════════════════════════════════════════════════════════
-app.get('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
-  try {
-    const { role, search } = req.query;
-    let query = `SELECT u.id, u.name, u.email, u.role, u.university_id, u.phone,
-                        u.is_active, u.join_date, d.name as department_name
-                 FROM users u LEFT JOIN departments d ON d.id = u.department_id
-                 WHERE 1=1`;
-    const params = [];
-    if (role) { params.push(role); query += ` AND u.role = $${params.length}`; }
-    if (search) { params.push(`%${search}%`); query += ` AND (u.name ILIKE $${params.length} OR u.email ILIKE $${params.length} OR u.university_id ILIKE $${params.length})`; }
-    query += ' ORDER BY u.created_at DESC';
-    const { rows } = await pool.query(query, params);
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
-  try {
-    const { name, email, role, university_id, department_id, phone, password } = req.body;
-    const password_hash = await bcrypt.hash(password || 'password123', 10);
-    const { rows } = await pool.query(
-      `INSERT INTO users (name, email, password_hash, role, university_id, department_id, phone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id, name, email, role, university_id`,
-      [name, email.toLowerCase(), password_hash, role, university_id, department_id, phone]
-    );
-    res.status(201).json(rows[0]);
-  } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'Email or University ID already exists' });
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-app.patch('/api/admin/users/:id/toggle', auth, requireRole('admin'), async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `UPDATE users SET is_active = NOT is_active WHERE id = $1 RETURNING id, name, is_active`,
-      [req.params.id]
-    );
-    res.json(rows[0]);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN - DEPARTMENTS
-// ═══════════════════════════════════════════════════════════════════════════════
-app.get('/api/admin/departments', auth, requireRole('admin'), async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT d.*,
-              COUNT(DISTINCT CASE WHEN u.role='student' THEN u.id END) as student_count,
-              COUNT(DISTINCT CASE WHEN u.role='faculty' THEN u.id END) as faculty_count
-       FROM departments d LEFT JOIN users u ON u.department_id = d.id
-       GROUP BY d.id ORDER BY d.name`
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
-});
-
-// ═══════════════════════════════════════════════════════════════════════════════
-// ADMIN - STATS / DASHBOARD
-// ═══════════════════════════════════════════════════════════════════════════════
-app.get('/api/admin/stats', auth, requireRole('admin'), async (req, res) => {
-  try {
-    const [students, faculty, courses, departments, pendingFees] = await Promise.all([
-      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'student' AND is_active = true`),
-      pool.query(`SELECT COUNT(*) FROM users WHERE role = 'faculty' AND is_active = true`),
-      pool.query(`SELECT COUNT(*) FROM courses`),
-      pool.query(`SELECT COUNT(*) FROM departments`),
-      pool.query(`SELECT COALESCE(SUM(amount),0) FROM fees WHERE status = 'pending'`),
-    ]);
-    res.json({
-      total_students: parseInt(students.rows[0].count),
-      total_faculty: parseInt(faculty.rows[0].count),
-      total_courses: parseInt(courses.rows[0].count),
-      total_departments: parseInt(departments.rows[0].count),
-      pending_fees: parseFloat(pendingFees.rows[0].coalesce),
-    });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const { error } = await supabase.from('notices').delete().eq('id', req.params.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ message: 'Deleted' });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // NOTIFICATIONS
 // ═══════════════════════════════════════════════════════════════════════════════
 app.get('/api/notifications', auth, async (req, res) => {
-  try {
-    const { rows } = await pool.query(
-      `SELECT * FROM notifications WHERE user_id = $1 ORDER BY created_at DESC LIMIT 20`,
-      [req.user.id]
-    );
-    res.json(rows);
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+  const { data, error } = await supabase.from('notifications').select('*').eq('user_id', req.user.id).order('created_at', { ascending: false }).limit(20);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
-app.patch('/api/notifications/read-all', auth, async (req, res) => {
-  try {
-    await pool.query(`UPDATE notifications SET is_read = true WHERE user_id = $1`, [req.user.id]);
-    res.json({ message: 'All marked as read' });
-  } catch (err) {
-    res.status(500).json({ error: 'Server error' });
-  }
+// ═══════════════════════════════════════════════════════════════════════════════
+// ADMIN
+// ═══════════════════════════════════════════════════════════════════════════════
+app.get('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
+  let query = supabase.from('users').select('id, name, email, role, university_id, phone, is_active, join_date, departments(name)');
+  if (req.query.role) query = query.eq('role', req.query.role);
+  if (req.query.search) query = query.or(`name.ilike.%${req.query.search}%,email.ilike.%${req.query.search}%`);
+  const { data, error } = await query.order('created_at', { ascending: false });
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
 });
 
-// ─── START SERVER ─────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`🚀 CAAP Backend running on port ${PORT}`);
+app.post('/api/admin/users', auth, requireRole('admin'), async (req, res) => {
+  const { name, email, role, university_id, department_id, phone, password } = req.body;
+  const password_hash = await bcrypt.hash(password || 'password123', 10);
+  const { data, error } = await supabase.from('users')
+    .insert({ name, email: email.toLowerCase(), password_hash, role, university_id, department_id, phone })
+    .select('id, name, email, role, university_id').single();
+  if (error) return res.status(error.code === '23505' ? 409 : 500).json({ error: error.message });
+  res.status(201).json(data);
 });
+
+app.patch('/api/admin/users/:id/toggle', auth, requireRole('admin'), async (req, res) => {
+  const { data: user } = await supabase.from('users').select('is_active').eq('id', req.params.id).single();
+  const { data, error } = await supabase.from('users').update({ is_active: !user.is_active }).eq('id', req.params.id).select('id, name, is_active').single();
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data);
+});
+
+app.get('/api/admin/departments', auth, requireRole('admin'), async (req, res) => {
+  const { data, error } = await supabase.from('departments').select('*').order('name');
+  if (error) return res.status(500).json({ error: error.message });
+  res.json(data || []);
+});
+
+app.get('/api/admin/stats', auth, requireRole('admin'), async (req, res) => {
+  const [students, faculty, courses, departments, fees] = await Promise.all([
+    supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'student').eq('is_active', true),
+    supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'faculty').eq('is_active', true),
+    supabase.from('courses').select('id', { count: 'exact', head: true }),
+    supabase.from('departments').select('id', { count: 'exact', head: true }),
+    supabase.from('fees').select('amount').eq('status', 'pending'),
+  ]);
+  const pendingFees = (fees.data || []).reduce((s, f) => s + parseFloat(f.amount), 0);
+  res.json({
+    total_students: students.count || 0,
+    total_faculty: faculty.count || 0,
+    total_courses: courses.count || 0,
+    total_departments: departments.count || 0,
+    pending_fees: pendingFees,
+  });
+});
+
+// ─── START ─────────────────────────────────────────────────────────────────────
+app.listen(PORT, () => console.log(`🚀 CAAP Backend running on port ${PORT}`));
